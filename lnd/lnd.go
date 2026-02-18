@@ -291,7 +291,7 @@ func writeChannelPolicyToMemgraphSnapshot(session neo4j.Session, edge *ChannelEd
 	if policy.MaxHtlcMsat != "" {
 		query := `
           MATCH (a:node {pubkey: $node1}), (b:node {pubkey: $node2})
-          MERGE (a)-[r:CHANNEL {channel_id: $chanID, capacity: $capacity}]->(b)
+          MERGE (a)-[r:edge {channel_id: $chanID, capacity: $capacity}]->(b)
           SET r.fee_base_msat = $feeBase, r.fee_rate_milli_msat = $feeRate, r.time_lock_delta = $timeLock,
 			r.disabled = $disabled, r.min_htlc_msat = $minHtlc, r.max_htlc_msat = $maxHtlc
 		`
