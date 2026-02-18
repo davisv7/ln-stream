@@ -289,14 +289,25 @@ func writeSnapshotChannelsToMemgraph(session neo4j.Session, edges []ChannelEdge)
 
 func writeChannelPolicyToMemgraphSnapshot(session neo4j.Session, edge *ChannelEdge, policy RoutingPolicy, node1PubKey, node2PubKey, chanID string) {
 	if policy.MaxHtlcMsat != "" {
-		query := fmt.Sprintf(`
-          MATCH (a:node {pubkey: '%s'}), (b:node {pubkey: '%s'})
-          MERGE (a)-[r:CHANNEL {channel_id: '%s', capacity: %s}]->(b)
-          SET r.fee_base_msat = %s, r.fee_rate_milli_msat = %s, r.time_lock_delta = %d,
-			r.disabled = %v, r.min_htlc_msat = %s, r.max_htlc_msat = %s
-      `, node1PubKey, node2PubKey, chanID, edge.Capacity,
-			policy.FeeBaseMsat, policy.FeeRateMilliMsat, policy.TimeLockDelta, policy.Disabled, policy.MinHtlc, policy.MaxHtlcMsat)
-		_, err := session.Run(query, nil)
+		query := `
+          MATCH (a:node {pubkey: $node1}), (b:node {pubkey: $node2})
+          MERGE (a)-[r:CHANNEL {channel_id: $chanID, capacity: $capacity}]->(b)
+          SET r.fee_base_msat = $feeBase, r.fee_rate_milli_msat = $feeRate, r.time_lock_delta = $timeLock,
+			r.disabled = $disabled, r.min_htlc_msat = $minHtlc, r.max_htlc_msat = $maxHtlc
+		`
+		params := map[string]interface{}{
+			"node1":    node1PubKey,
+			"node2":    node2PubKey,
+			"chanID":   chanID,
+			"capacity": edge.Capacity,
+			"feeBase":  policy.FeeBaseMsat,
+			"feeRate":  policy.FeeRateMilliMsat,
+			"timeLock": policy.TimeLockDelta,
+			"disabled": policy.Disabled,
+			"minHtlc":  policy.MinHtlc,
+			"maxHtlc":  policy.MaxHtlcMsat,
+		}
+		_, err := session.Run(query, params)
 		if err != nil {
 			log.Printf("Failed to execute channel policy query: %v", err)
 		}
