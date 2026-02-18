@@ -2,7 +2,7 @@
 
 > Stream graph updates from LND into Memgraph.
 
-ln-stream pulls your Lightning Network node's channel graph into a Memgraph database and keeps it updated in real time. This lets you run graph queries — shortest paths, betweenness centrality, capacity analysis — using Memgraph Lab's built-in Cypher console. A bundled snapshot is included so you can explore the graph without running a node.
+ln-stream pulls your Lightning Network node's channel graph into a Memgraph database and keeps it updated in real time. This lets you run graph queries using Memgraph Lab's built-in Cypher console. A bundled snapshot is included so you can explore the graph without running a node.
 
 ## Quick Start (no LND)
 
@@ -48,4 +48,4 @@ The control panel at `localhost:8080` has three actions:
 
 ## Memgraph Lab
 
-Memgraph Lab is available at `localhost:3000`. When connecting, use host `memgraph-mage` and port `7687`.
+Memgraph Lab is available at `localhost:3000`.
