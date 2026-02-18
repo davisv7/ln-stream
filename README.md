@@ -2,56 +2,50 @@
 
 > Stream graph updates from LND into Memgraph.
 
-## Setup and Installation
+ln-stream pulls your Lightning Network node's channel graph into a Memgraph database and keeps it updated in real time. This lets you run graph queries — shortest paths, betweenness centrality, capacity analysis — using Memgraph Lab's built-in Cypher console. A bundled snapshot is included so you can explore the graph without running a node.
 
-This guide assumes that you already have [Go](https://go.dev/) and [Memgraph Lab](https://memgraph.com/download#individual) installed.
-To get started, follow these steps:
+## Quick Start (no LND)
 
-1. Clone this repository to your local machine:
+```
+git clone https://git.lyberry.com/v/ln-stream.git
+cd ln-stream
+docker compose up
+```
 
+1. Open the control panel at `localhost:8080`
+2. Click **Load Local Snapshot** to import the bundled `describegraph.json`
+3. Open Memgraph Lab at `localhost:3000` to explore the graph
+
+## Quick Start (with LND)
+
+```
+git clone https://git.lyberry.com/v/ln-stream.git
+cd ln-stream
+```
+
+1. Copy your `readonly.macaroon` and `tls.cert` into the `creds/` directory
+2. Create your `.env` from the example and set your node's address and network:
    ```
-   git clone https://git.lyberry.com/v/ln-stream.git
-   cd ln-stream
+   cp .env-example .env
    ```
-
-2. Initialize the Go module and download dependencies:
-
    ```
-   go mod tidy
+   LND_ADDRESS=<HOST>:10009
+   LND_NETWORK=mainnet
    ```
-
-3. Configure the environment variables:
-
-    - Copy the example file `.env-example` to `.env`:
-
-      ```
-      cp .env-example .env
-      ```
-
-    - Open the `.env` file and populate it with the relevant values:
-
-      ```
-      NEO4J_HOST=localhost  
-      NEO4J_PORT=7687  
-      NEO4J_USERNAME=
-      NEO4J_PASSWORD=
-      LND_ADDRESS=<HOST>:10009
-      LND_NETWORK=mainnet
-      LND_MACAROON_PATH=/path/to/readonly.macaroon
-      LND_TLS_CERT_PATH=/path/to/tls.cert
-      ```
-
-4. Start Memgraph using Docker Compose:
-
+3. Start everything:
    ```
    docker compose up
    ```
+4. Open the control panel at `localhost:8080`
 
-5. Start the Control Panel:
+## Control Panel
 
-    ```
-   go run main.go
-   ```
+The control panel at `localhost:8080` has three actions:
 
-From here, you should have an instance of memgraph up receiving updates from LND.
-There is also a control panel running at http://localhost:8080 that lets you pause graph updates and reset the graph.
+- **Reset Graph** — clears the database and pulls a fresh graph from LND (requires LND)
+- **Toggle Updates** — starts or stops the real-time graph subscription (requires LND)
+- **Load Local Snapshot** — loads the bundled `describegraph.json` into Memgraph (no LND needed)
+
+## Memgraph Lab
+
+Memgraph Lab is available at `localhost:3000`. When connecting, use host `memgraph-mage` and port `7687`.
