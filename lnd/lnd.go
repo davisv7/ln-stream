@@ -81,7 +81,7 @@ type Graph struct {
 	Edges []ChannelEdge
 }
 
-func writeNodesToMemgraph(session neo4j.Session, nodes []lndclient.Node) {
+func writeNodesToMemgraph(session neo4j.Session, nodes []lndclient.Node) error {
 	const batchSize = 100
 
 	for i := 0; i < len(nodes); i += batchSize {
@@ -91,7 +91,6 @@ func writeNodesToMemgraph(session neo4j.Session, nodes []lndclient.Node) {
 		}
 		batch := nodes[i:end]
 
-		// Prepare the list of maps for UNWIND
 		records := make([]map[string]interface{}, 0, len(batch))
 		for _, node := range batch {
 			records = append(records, map[string]interface{}{
@@ -111,34 +110,29 @@ func writeNodesToMemgraph(session neo4j.Session, nodes []lndclient.Node) {
 
 		_, err := session.Run(query, params)
 		if err != nil {
-			log.Printf("Failed to execute batch node query: %v", err)
+			return fmt.Errorf("failed to execute batch node query: %w", err)
 		}
 	}
+	return nil
 }
 
-func createNodeIndex(session neo4j.Session) {
-	// Query to create an index on the pubkey property of Node
-	indexQuery := "CREATE INDEX ON :node(pubkey)"
-
-	// Execute the index creation query
-	_, err := session.Run(indexQuery, nil)
+func createNodeIndex(session neo4j.Session) error {
+	_, err := session.Run("CREATE INDEX ON :node(pubkey)", nil)
 	if err != nil {
-		log.Printf("Failed to create index: %v", err)
+		return fmt.Errorf("failed to create node index: %w", err)
 	}
+	return nil
 }
 
-func createIndexForChannels(session neo4j.Session) {
-	// Query to create an index on the channel_id property of CHANNEL relationships
-	indexQuery := "CREATE INDEX ON :edge(channel_id)"
-
-	// Execute the index creation query
-	_, err := session.Run(indexQuery, nil)
+func createIndexForChannels(session neo4j.Session) error {
+	_, err := session.Run("CREATE INDEX ON :edge(channel_id)", nil)
 	if err != nil {
-		log.Printf("Failed to create index for channels: %v", err)
+		return fmt.Errorf("failed to create channel index: %w", err)
 	}
+	return nil
 }
 
-func writeChannelsToMemgraph(session neo4j.Session, edges []lndclient.ChannelEdge) {
+func writeChannelsToMemgraph(session neo4j.Session, edges []lndclient.ChannelEdge) error {
 	const batchSize = 100
 
 	relations := []map[string]interface{}{}
@@ -205,61 +199,76 @@ func writeChannelsToMemgraph(session neo4j.Session, edges []lndclient.ChannelEdg
 		params := map[string]interface{}{"rows": batch}
 		_, err := session.Run(query, params)
 		if err != nil {
-			log.Printf("Failed to execute batch channel policy query: %v", err)
+			return fmt.Errorf("failed to execute batch channel query: %w", err)
 		}
 	}
+	return nil
 }
 
-func PullGraph(lndServices *lndclient.GrpcLndServices) *lndclient.Graph {
-
-	fmt.Println("Pulling graph...")
+func PullGraph(lndServices *lndclient.GrpcLndServices) (*lndclient.Graph, error) {
+	log.Println("Pulling graph...")
 	duration := 10 * 60 * time.Second
 	_ctx := context.WithoutCancel(context.Background())
 	ctx, cancel := context.WithTimeout(_ctx, duration)
 	defer cancel()
 	graph, err := lndServices.Client.DescribeGraph(ctx, false)
 	if err != nil {
-		log.Printf("Failed to execute channel policy query: %v", err)
+		return nil, fmt.Errorf("failed to pull graph: %w", err)
 	}
-	return graph
-
+	return graph, nil
 }
 
-func WriteGraphToMemgraph(graph *lndclient.Graph, neo4jDriver neo4j.Driver) {
+func WriteGraphToMemgraph(graph *lndclient.Graph, neo4jDriver neo4j.Driver) error {
 	session := neo4jDriver.NewSession(neo4j.SessionConfig{})
 	defer session.Close()
 
-	fmt.Println("Writing to Memgraph...")
-	createNodeIndex(session)
-	createIndexForChannels(session)
-	writeNodesToMemgraph(session, graph.Nodes)
-	writeChannelsToMemgraph(session, graph.Edges)
-	fmt.Println("Finished writing to Memgraph...")
+	log.Println("Writing to Memgraph...")
+	if err := createNodeIndex(session); err != nil {
+		return err
+	}
+	if err := createIndexForChannels(session); err != nil {
+		return err
+	}
+	if err := writeNodesToMemgraph(session, graph.Nodes); err != nil {
+		return err
+	}
+	if err := writeChannelsToMemgraph(session, graph.Edges); err != nil {
+		return err
+	}
+	log.Println("Finished writing to Memgraph.")
+	return nil
 }
 
-func WriteSnapshotToMemgraph(snapshotFilename string, neo4jDriver neo4j.Driver) {
+func WriteSnapshotToMemgraph(snapshotFilename string, neo4jDriver neo4j.Driver) error {
 	session := neo4jDriver.NewSession(neo4j.SessionConfig{})
 	defer session.Close()
 
 	jsonFile, err := os.Open(snapshotFilename)
 	if err != nil {
-		log.Fatalf("Failed to open snapshot: %v", err)
+		return fmt.Errorf("failed to open snapshot: %w", err)
 	}
 	defer jsonFile.Close()
 
-	byteValue, _ := io.ReadAll(jsonFile)
-	var graph Graph
-	err = json.Unmarshal(byteValue, &graph)
+	byteValue, err := io.ReadAll(jsonFile)
 	if err != nil {
-		log.Fatalf("Failed to open snapshot: %v", err)
+		return fmt.Errorf("failed to read snapshot: %w", err)
+	}
+	var graph Graph
+	if err := json.Unmarshal(byteValue, &graph); err != nil {
+		return fmt.Errorf("failed to unmarshal snapshot: %w", err)
 	}
 
-	fmt.Println("Writing to Memgraph...")
-	createNodeIndex(session)
-	createIndexForChannels(session)
+	log.Println("Writing snapshot to Memgraph...")
+	if err := createNodeIndex(session); err != nil {
+		return err
+	}
+	if err := createIndexForChannels(session); err != nil {
+		return err
+	}
 	writeSnapshotNodesToMemgraph(session, graph.Nodes)
 	writeSnapshotChannelsToMemgraph(session, graph.Edges)
-	fmt.Println("Finished writing to Memgraph...")
+	log.Println("Finished writing snapshot to Memgraph.")
+	return nil
 }
 
 func writeSnapshotNodesToMemgraph(session neo4j.Session, nodes []Node) {
@@ -281,7 +290,7 @@ func writeSnapshotNodesToMemgraph(session neo4j.Session, nodes []Node) {
 
 func writeSnapshotChannelsToMemgraph(session neo4j.Session, edges []ChannelEdge) {
 	for _, edge := range edges {
-		chanID := convertChannelIDToString(edge.ChannelId) // Convert uint64 to string format
+		chanID := convertChannelIDToString(edge.ChannelId)
 		writeChannelPolicyToMemgraphSnapshot(session, &edge, edge.Node1Policy, edge.Node1_Pub, edge.Node2_Pub, chanID)
 		writeChannelPolicyToMemgraphSnapshot(session, &edge, edge.Node2Policy, edge.Node2_Pub, edge.Node1_Pub, chanID)
 	}

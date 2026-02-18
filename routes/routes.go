@@ -51,37 +51,58 @@ func ResetGraphHandler(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	fmt.Println("Graph update initiated...")
+	log.Println("Graph update initiated...")
 	stopRoutine()
 
-	memgraph.DropDatabase(Driver)
-	graph := lnd.PullGraph(LndServices)
-	lnd.WriteGraphToMemgraph(graph, Driver)
-	memgraph.SetupAfterImport(Driver)
+	if err := memgraph.DropDatabase(Driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to drop database: %v", err)})
+		return
+	}
+	graph, err := lnd.PullGraph(LndServices)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to pull graph: %v", err)})
+		return
+	}
+	if err := lnd.WriteGraphToMemgraph(graph, Driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to write graph: %v", err)})
+		return
+	}
+	if err := memgraph.SetupAfterImport(Driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("post-import setup failed: %v", err)})
+		return
+	}
 
-	c.String(http.StatusOK, "Graph update started.")
+	c.String(http.StatusOK, "Graph update complete.")
 }
 
 func LoadLocalSnapshot(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	fmt.Println("Graph update initiated...")
+	log.Println("Snapshot load initiated...")
 	stopRoutine()
 
-	memgraph.DropDatabase(Driver)
-	lnd.WriteSnapshotToMemgraph("./describegraph.json", Driver)
-	memgraph.SetupAfterImport(Driver)
+	if err := memgraph.DropDatabase(Driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to drop database: %v", err)})
+		return
+	}
+	if err := lnd.WriteSnapshotToMemgraph("./describegraph.json", Driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load snapshot: %v", err)})
+		return
+	}
+	if err := memgraph.SetupAfterImport(Driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("post-import setup failed: %v", err)})
+		return
+	}
 
-	c.String(http.StatusOK, "Graph update started.")
+	c.String(http.StatusOK, "Snapshot load complete.")
 }
 
 func GetStatusHandler(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	c.JSON(http.StatusOK, gin.H{"isRoutineRunning": isRoutineRunning,
-		"message": "Routine stopped."})
+	c.JSON(http.StatusOK, gin.H{"isRoutineRunning": isRoutineRunning})
 }
 
 func subscribeToGraphUpdates(stop <-chan struct{}) {
@@ -94,16 +115,15 @@ func subscribeToGraphUpdates(stop <-chan struct{}) {
 		return
 	}
 
-	fmt.Println("Routine started.")
-	fmt.Println("Subscribed to graph topology updates. Waiting for updates...")
+	log.Println("Subscribed to graph topology updates. Waiting for updates...")
 	for {
 		select {
 		case update := <-graphUpdates:
 			memgraph.ProcessUpdates(Driver, update)
 		case err := <-errors:
-			log.Printf("Error receiving graph update: %v\n", err)
+			log.Printf("Error receiving graph update: %v", err)
 		case <-stop:
-			fmt.Println("Stopping graph update loop.")
+			log.Println("Stopping graph update loop.")
 			return
 		}
 	}
