@@ -3,74 +3,71 @@ package routes
 import (
 	"context"
 	"fmt"
+	"log"
+	"net/http"
+	"sync"
+
 	"github.com/gin-gonic/gin"
 	"github.com/lightninglabs/lndclient"
 	"github.com/neo4j/neo4j-go-driver/v4/neo4j"
 	"ln-stream/lnd"
 	"ln-stream/memgraph"
-	"log"
-	"net/http"
 )
 
 var (
-	IsRoutineRunning = true
-	LndServices      *lndclient.GrpcLndServices
-	Driver           neo4j.Driver
-	StopChannel      chan bool
-	GraphUpdates     <-chan *lndclient.GraphTopologyUpdate
-	Errors           <-chan error
+	LndServices *lndclient.GrpcLndServices
+	Driver      neo4j.Driver
+
+	mu               sync.Mutex
+	isRoutineRunning bool
+	stopChannel      chan struct{}
 )
 
-func ToggleUpdatesHandler(c *gin.Context) {
-	var err error
-	// Subscribe to graph topology updates
-	GraphUpdates, Errors, err = LndServices.Client.SubscribeGraph(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to subscribe to graph updates: %v", err)
+func stopRoutine() {
+	if isRoutineRunning {
+		close(stopChannel)
+		isRoutineRunning = false
 	}
+}
 
-	if !IsRoutineRunning {
-		IsRoutineRunning = true
-		StopChannel = make(chan bool)
-		go SubscribeToGraphUpdates()
+func ToggleUpdatesHandler(c *gin.Context) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !isRoutineRunning {
+		stopChannel = make(chan struct{})
+		isRoutineRunning = true
+		go subscribeToGraphUpdates(stopChannel)
 		c.JSON(http.StatusOK, gin.H{"isRoutineRunning": true,
 			"message": "Routine started."})
 	} else {
-		IsRoutineRunning = false
-		StopChannel <- true
-		close(StopChannel)
+		stopRoutine()
 		c.JSON(http.StatusOK, gin.H{"isRoutineRunning": false,
 			"message": "Routine stopped."})
 	}
 }
 
 func ResetGraphHandler(c *gin.Context) {
-	fmt.Println("Graph update initiated...")
+	mu.Lock()
+	defer mu.Unlock()
 
-	if IsRoutineRunning {
-		IsRoutineRunning = false
-		StopChannel <- true
-		close(StopChannel)
-	}
+	fmt.Println("Graph update initiated...")
+	stopRoutine()
 
 	memgraph.DropDatabase(Driver)
 	graph := lnd.PullGraph(LndServices)
 	lnd.WriteGraphToMemgraph(graph, Driver)
 	memgraph.SetupAfterImport(Driver)
 
-	StopChannel = make(chan bool)
-
 	c.String(http.StatusOK, "Graph update started.")
 }
 
 func LoadLocalSnapshot(c *gin.Context) {
-	fmt.Println("Graph update initiated...")
+	mu.Lock()
+	defer mu.Unlock()
 
-	if IsRoutineRunning {
-		IsRoutineRunning = false
-		StopChannel <- true
-		close(StopChannel)
-	}
+	fmt.Println("Graph update initiated...")
+	stopRoutine()
 
 	memgraph.DropDatabase(Driver)
 	lnd.WriteSnapshotToMemgraph("./describegraph.json", Driver)
@@ -80,27 +77,32 @@ func LoadLocalSnapshot(c *gin.Context) {
 }
 
 func GetStatusHandler(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"isRoutineRunning": IsRoutineRunning,
+	mu.Lock()
+	defer mu.Unlock()
+
+	c.JSON(http.StatusOK, gin.H{"isRoutineRunning": isRoutineRunning,
 		"message": "Routine stopped."})
 }
 
-func SubscribeToGraphUpdates() {
-	var err error
-	GraphUpdates, Errors, err = LndServices.Client.SubscribeGraph(context.Background())
+func subscribeToGraphUpdates(stop <-chan struct{}) {
+	graphUpdates, errors, err := LndServices.Client.SubscribeGraph(context.Background())
 	if err != nil {
-		log.Fatalf("Failed to subscribe to graph updates: %v", err)
+		log.Printf("Failed to subscribe to graph updates: %v", err)
+		mu.Lock()
+		isRoutineRunning = false
+		mu.Unlock()
+		return
 	}
-	IsRoutineRunning = true
-	StopChannel = make(chan bool)
+
 	fmt.Println("Routine started.")
 	fmt.Println("Subscribed to graph topology updates. Waiting for updates...")
 	for {
 		select {
-		case update := <-GraphUpdates:
+		case update := <-graphUpdates:
 			memgraph.ProcessUpdates(Driver, update)
-		case err := <-Errors:
+		case err := <-errors:
 			log.Printf("Error receiving graph update: %v\n", err)
-		case <-StopChannel:
+		case <-stop:
 			fmt.Println("Stopping graph update loop.")
 			return
 		}

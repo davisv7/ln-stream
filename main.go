@@ -46,8 +46,6 @@ func main() {
 	router.StaticFile("/static/style.css", "./static/style.css")
 	router.StaticFile("/", "./index.html")
 
-	routes.IsRoutineRunning = false
-
 	// Start the server
 	fmt.Println("Server started at http://localhost:8080")
 	router.Run(":8080")
