@@ -1,3 +1,5 @@
+// Package routes defines the HTTP handlers for the ln-stream control panel.
+// Handlers are protected by a mutex to prevent concurrent graph operations.
 package routes
 
 import (
@@ -15,14 +17,18 @@ import (
 )
 
 var (
+	// LndServices is the gRPC client for LND. Nil when running in snapshot-only mode.
 	LndServices *lndclient.GrpcLndServices
-	Driver      neo4j.Driver
+	// Driver is the Neo4j/Memgraph database connection.
+	Driver neo4j.Driver
 
+	// mu protects isRoutineRunning and stopChannel from concurrent access.
 	mu               sync.Mutex
 	isRoutineRunning bool
 	stopChannel      chan struct{}
 )
 
+// stopRoutine signals the graph update goroutine to stop. Must be called with mu held.
 func stopRoutine() {
 	if isRoutineRunning {
 		close(stopChannel)
@@ -30,9 +36,25 @@ func stopRoutine() {
 	}
 }
 
+// requireLND checks that LND is configured and returns a 400 error if not.
+// Used to guard handlers that need a live LND connection.
+func requireLND(c *gin.Context) bool {
+	if LndServices == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "LND not configured"})
+		return false
+	}
+	return true
+}
+
+// ToggleUpdatesHandler starts or stops the real-time graph update subscription.
+// Requires LND to be configured.
 func ToggleUpdatesHandler(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
+
+	if !requireLND(c) {
+		return
+	}
 
 	if !isRoutineRunning {
 		stopChannel = make(chan struct{})
@@ -47,9 +69,15 @@ func ToggleUpdatesHandler(c *gin.Context) {
 	}
 }
 
+// ResetGraphHandler drops the database, pulls a fresh graph from LND, writes it
+// to Memgraph, and runs post-import computations. Requires LND to be configured.
 func ResetGraphHandler(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
+
+	if !requireLND(c) {
+		return
+	}
 
 	log.Println("Graph update initiated...")
 	stopRoutine()
@@ -75,6 +103,8 @@ func ResetGraphHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Graph update complete.")
 }
 
+// LoadLocalSnapshot drops the database and loads the graph from a local
+// describegraph.json snapshot. Does not require LND.
 func LoadLocalSnapshot(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -98,6 +128,7 @@ func LoadLocalSnapshot(c *gin.Context) {
 	c.String(http.StatusOK, "Snapshot load complete.")
 }
 
+// GetStatusHandler returns whether the graph update routine is currently running.
 func GetStatusHandler(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -105,6 +136,8 @@ func GetStatusHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"isRoutineRunning": isRoutineRunning})
 }
 
+// subscribeToGraphUpdates subscribes to LND's graph topology update stream and
+// applies each update to Memgraph. Runs until the stop channel is closed.
 func subscribeToGraphUpdates(stop <-chan struct{}) {
 	graphUpdates, errors, err := LndServices.Client.SubscribeGraph(context.Background())
 	if err != nil {

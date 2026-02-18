@@ -1,3 +1,5 @@
+// Package memgraph handles the Memgraph/Neo4j database connection and provides
+// functions for querying, updating, and maintaining the Lightning Network graph.
 package memgraph
 
 import (
@@ -9,7 +11,8 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v4/neo4j"
 )
 
-// ConnectNeo4j creates a new Neo4j driver instance and establishes a connection
+// ConnectNeo4j creates a Neo4j driver using connection details from environment variables.
+// Uses TLS (bolt+ssc) for remote hosts and plain bolt for local/Docker connections.
 func ConnectNeo4j() (neo4j.Driver, error) {
 	host := os.Getenv("NEO4J_HOST")
 	port := os.Getenv("NEO4J_PORT")
@@ -30,12 +33,13 @@ func ConnectNeo4j() (neo4j.Driver, error) {
 	return driver, nil
 }
 
-// CloseDriver closes the Neo4j driver connection
+// CloseDriver closes the Neo4j driver connection.
 func CloseDriver(driver neo4j.Driver) {
 	driver.Close()
 }
 
-// DropDatabase drops all nodes/relationships from the database.
+// DropDatabase removes all nodes, relationships, and indexes from the database.
+// Index drop failures are logged but not returned since the indexes may not exist.
 func DropDatabase(neo4jDriver neo4j.Driver) error {
 	log.Println("Dropping database...")
 	session := neo4jDriver.NewSession(neo4j.SessionConfig{})
@@ -46,13 +50,11 @@ func DropDatabase(neo4jDriver neo4j.Driver) error {
 		return fmt.Errorf("failed to drop database: %w", err)
 	}
 
-	// Drop index on pub_key property
 	_, err = session.Run("DROP INDEX ON :node(pubkey)", nil)
 	if err != nil {
 		log.Printf("Failed to drop index on pubkey property: %v", err)
 	}
 
-	// Drop index on channel_id property
 	_, err = session.Run("DROP INDEX ON :edge(channel_id)", nil)
 	if err != nil {
 		log.Printf("Failed to drop index on channel_id property: %v", err)
@@ -61,7 +63,7 @@ func DropDatabase(neo4jDriver neo4j.Driver) error {
 	return nil
 }
 
-// CommitQuery commits a query to Neo4j with parameters
+// CommitQuery executes a single parameterized Cypher query against Memgraph.
 func CommitQuery(driver neo4j.Driver, query string, params map[string]interface{}) (neo4j.Result, error) {
 	session := driver.NewSession(neo4j.SessionConfig{})
 	defer session.Close()
@@ -72,7 +74,8 @@ func CommitQuery(driver neo4j.Driver, query string, params map[string]interface{
 	return result, nil
 }
 
-// ProcessNodeUpdate converts node updates to Memgraph queries
+// ProcessNodeUpdate converts an LND node update into a Cypher MERGE query
+// that creates or updates the node in Memgraph.
 func ProcessNodeUpdate(nodeUpdate lndclient.NodeUpdate) (string, map[string]interface{}) {
 	nodeQuery := "MERGE (n:node {pubkey: $pubKey})\nSET n.alias = $alias"
 	params := map[string]interface{}{
@@ -82,7 +85,9 @@ func ProcessNodeUpdate(nodeUpdate lndclient.NodeUpdate) (string, map[string]inte
 	return nodeQuery, params
 }
 
-// ProcessEdgeUpdate converts channel edge updates to Memgraph queries
+// ProcessEdgeUpdate converts an LND channel edge update into a Cypher query.
+// If the channel is disabled, only the disabled flag is updated. Otherwise,
+// the full edge is created/updated with routing policy details.
 func ProcessEdgeUpdate(edgeUpdate lndclient.ChannelEdgeUpdate) (string, map[string]interface{}) {
 	var (
 		edgeQuery string
@@ -111,7 +116,8 @@ func ProcessEdgeUpdate(edgeUpdate lndclient.ChannelEdgeUpdate) (string, map[stri
 	return edgeQuery, params
 }
 
-// ProcessCloseUpdate converts channel close updates to Memgraph queries
+// ProcessCloseUpdate converts an LND channel close event into a Cypher DELETE query
+// that removes the channel edge from Memgraph.
 func ProcessCloseUpdate(closeUpdate lndclient.ChannelCloseUpdate) (string, map[string]interface{}) {
 	closeQuery := "MATCH ()-[r:edge {channel_id: $channelID}]->()\nDELETE r"
 	params := map[string]interface{}{
@@ -120,7 +126,8 @@ func ProcessCloseUpdate(closeUpdate lndclient.ChannelCloseUpdate) (string, map[s
 	return closeQuery, params
 }
 
-// ProcessUpdates calls the corresponding update function for each type of update
+// ProcessUpdates applies a batch of graph topology updates (node changes,
+// channel opens/updates, and channel closes) to Memgraph.
 func ProcessUpdates(driver neo4j.Driver, update *lndclient.GraphTopologyUpdate) {
 	for _, nodeUpdate := range update.NodeUpdates {
 		nodeQuery, nodeParams := ProcessNodeUpdate(nodeUpdate)
@@ -147,7 +154,11 @@ func ProcessUpdates(driver neo4j.Driver, update *lndclient.GraphTopologyUpdate) 
 	}
 }
 
-// SetupAfterImport runs a set of commands directly after importing a snapshot.
+// SetupAfterImport runs post-import computations on the graph:
+//   - Converts fee_base_msat to milli-msat denomination
+//   - Calculates total capacity per node
+//   - Computes betweenness centrality for nodes (via Memgraph MAGE)
+//   - Averages node centrality onto edges
 func SetupAfterImport(neo4jDriver neo4j.Driver) error {
 	log.Println("Running post-import setup...")
 	session := neo4jDriver.NewSession(neo4j.SessionConfig{})

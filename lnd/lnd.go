@@ -1,3 +1,5 @@
+// Package lnd handles communication with the Lightning Network Daemon (LND)
+// and writing graph data to Memgraph.
 package lnd
 
 import (
@@ -14,6 +16,8 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v4/neo4j"
 )
 
+// convertChannelIDToString decodes a compact channel ID (uint64) into the
+// human-readable block:index:output format used by the Lightning Network.
 func convertChannelIDToString(channelID uint64) string {
 	blockHeight := channelID >> 40
 	blockIndex := (channelID >> 16) & ((1 << 24) - 1)
@@ -21,6 +25,8 @@ func convertChannelIDToString(channelID uint64) string {
 	return fmt.Sprintf("%d:%d:%d", blockHeight, blockIndex, outputIndex)
 }
 
+// ConnectToLND establishes a gRPC connection to the Lightning Network Daemon
+// using credentials from environment variables.
 func ConnectToLND() (*lndclient.GrpcLndServices, error) {
 	config := lndclient.LndServicesConfig{
 		LndAddress:         os.Getenv("LND_ADDRESS"),
@@ -31,35 +37,27 @@ func ConnectToLND() (*lndclient.GrpcLndServices, error) {
 	return lndclient.NewLndServices(&config)
 }
 
+// Node represents a Lightning Network node as serialized in the describegraph.json snapshot.
 type Node struct {
-	Pub_Key string
-
+	Pub_Key    string
 	LastUpdate time.Time
-
-	Alias string
-
-	Color string
-
-	Features map[string]interface{}
-
-	Addresses []interface{}
+	Alias      string
+	Color      string
+	Features   map[string]interface{}
+	Addresses  []interface{}
 }
 
+// ChannelEdge represents a payment channel between two nodes in the snapshot.
 type ChannelEdge struct {
-	ChannelId uint64 `json:"channel_id,string"`
-
-	Capacity string `json:"capacity"`
-
-	Node1_Pub string `json:"node1_pub"`
-
-	Node2_Pub string `json:"node2_pub"`
-
+	ChannelId   uint64        `json:"channel_id,string"`
+	Capacity    string        `json:"capacity"`
+	Node1_Pub   string        `json:"node1_pub"`
+	Node2_Pub   string        `json:"node2_pub"`
 	Node1Policy RoutingPolicy `json:"node1_policy,omitempty"`
-
 	Node2Policy RoutingPolicy `json:"node2_policy,omitempty"`
 }
 
-// RoutingPolicy holds the edge routing policy for a channel edge.
+// RoutingPolicy holds the fee and routing parameters for one direction of a channel.
 type RoutingPolicy struct {
 	TimeLockDelta    int    `json:"time_lock_delta"`
 	MinHtlc          string `json:"min_htlc"`
@@ -72,15 +70,14 @@ type RoutingPolicy struct {
 	} `json:"custom_records"`
 }
 
-// Graph describes our view of the graph.
+// Graph is the top-level structure of the describegraph.json snapshot file.
 type Graph struct {
-	// Nodes is the set of nodes in the channel graph.
 	Nodes []Node
-
-	// Edges is the set of edges in the channel graph.
 	Edges []ChannelEdge
 }
 
+// writeNodesToMemgraph batch-inserts nodes from a live LND graph into Memgraph
+// using UNWIND for efficient bulk writes.
 func writeNodesToMemgraph(session neo4j.Session, nodes []lndclient.Node) error {
 	const batchSize = 100
 
@@ -116,6 +113,7 @@ func writeNodesToMemgraph(session neo4j.Session, nodes []lndclient.Node) error {
 	return nil
 }
 
+// createNodeIndex creates a database index on node pubkeys for fast lookups.
 func createNodeIndex(session neo4j.Session) error {
 	_, err := session.Run("CREATE INDEX ON :node(pubkey)", nil)
 	if err != nil {
@@ -124,6 +122,7 @@ func createNodeIndex(session neo4j.Session) error {
 	return nil
 }
 
+// createIndexForChannels creates a database index on edge channel_ids for fast lookups.
 func createIndexForChannels(session neo4j.Session) error {
 	_, err := session.Run("CREATE INDEX ON :edge(channel_id)", nil)
 	if err != nil {
@@ -132,12 +131,17 @@ func createIndexForChannels(session neo4j.Session) error {
 	return nil
 }
 
+// writeChannelsToMemgraph batch-inserts channel edges from a live LND graph into Memgraph.
+// Each channel produces two directed edges (one per routing policy direction).
 func writeChannelsToMemgraph(session neo4j.Session, edges []lndclient.ChannelEdge) error {
 	const batchSize = 100
 
+	// Flatten all channel policies into directional edge records.
 	relations := []map[string]interface{}{}
 
 	for _, edge := range edges {
+		// Convert the compact channel ID to block-height format, using 'x' as separator
+		// for Memgraph compatibility.
 		chanID := strings.Replace(convertChannelIDToString(edge.ChannelID), ":", "x", -1)
 
 		if edge.Node1Policy != nil {
@@ -175,6 +179,7 @@ func writeChannelsToMemgraph(session neo4j.Session, edges []lndclient.ChannelEdg
 		}
 	}
 
+	// Write edges in batches using UNWIND.
 	for i := 0; i < len(relations); i += batchSize {
 		end := i + batchSize
 		if end > len(relations) {
@@ -205,6 +210,7 @@ func writeChannelsToMemgraph(session neo4j.Session, edges []lndclient.ChannelEdg
 	return nil
 }
 
+// PullGraph fetches the complete channel graph from LND with a 10-minute timeout.
 func PullGraph(lndServices *lndclient.GrpcLndServices) (*lndclient.Graph, error) {
 	log.Println("Pulling graph...")
 	duration := 10 * 60 * time.Second
@@ -218,6 +224,8 @@ func PullGraph(lndServices *lndclient.GrpcLndServices) (*lndclient.Graph, error)
 	return graph, nil
 }
 
+// WriteGraphToMemgraph writes a live LND graph to Memgraph, creating indexes first
+// then batch-inserting nodes and channels.
 func WriteGraphToMemgraph(graph *lndclient.Graph, neo4jDriver neo4j.Driver) error {
 	session := neo4jDriver.NewSession(neo4j.SessionConfig{})
 	defer session.Close()
@@ -239,6 +247,8 @@ func WriteGraphToMemgraph(graph *lndclient.Graph, neo4jDriver neo4j.Driver) erro
 	return nil
 }
 
+// WriteSnapshotToMemgraph loads a describegraph.json file and writes its contents
+// to Memgraph. Used when no LND connection is available.
 func WriteSnapshotToMemgraph(snapshotFilename string, neo4jDriver neo4j.Driver) error {
 	session := neo4jDriver.NewSession(neo4j.SessionConfig{})
 	defer session.Close()
@@ -271,6 +281,8 @@ func WriteSnapshotToMemgraph(snapshotFilename string, neo4jDriver neo4j.Driver) 
 	return nil
 }
 
+// writeSnapshotNodesToMemgraph inserts nodes from a JSON snapshot one at a time.
+// Each node is tagged with is_wumbo based on whether feature bit 19 is present.
 func writeSnapshotNodesToMemgraph(session neo4j.Session, nodes []Node) {
 	for _, node := range nodes {
 		_, is_wumbo := node.Features["19"]
@@ -288,6 +300,8 @@ func writeSnapshotNodesToMemgraph(session neo4j.Session, nodes []Node) {
 	}
 }
 
+// writeSnapshotChannelsToMemgraph inserts channel edges from a JSON snapshot,
+// writing both directions (node1->node2 and node2->node1) for each channel.
 func writeSnapshotChannelsToMemgraph(session neo4j.Session, edges []ChannelEdge) {
 	for _, edge := range edges {
 		chanID := convertChannelIDToString(edge.ChannelId)
@@ -296,6 +310,8 @@ func writeSnapshotChannelsToMemgraph(session neo4j.Session, edges []ChannelEdge)
 	}
 }
 
+// writeChannelPolicyToMemgraphSnapshot writes a single directional channel policy
+// to Memgraph. Skipped if the policy has no MaxHtlcMsat (indicates an empty/missing policy).
 func writeChannelPolicyToMemgraphSnapshot(session neo4j.Session, edge *ChannelEdge, policy RoutingPolicy, node1PubKey, node2PubKey, chanID string) {
 	if policy.MaxHtlcMsat != "" {
 		query := `
