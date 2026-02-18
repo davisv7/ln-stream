@@ -1,0 +1,200 @@
+// https://memgraph.com/docs/data-visualization/graph-style-script
+// Size range min/max variables
+Define(MIN_SIZE, 5)
+Define(MAX_SIZE, 100)
+Define(PROP_NAME, "total_capacity")
+// Define(PROP_NAME, "fee_ratio")
+// Define(PROP_NAME, "local_fee")
+// Define(PROP_NAME, "remote_fee")
+// Define(PROP_NAME, "betweenness_centrality")
+
+Define(E_MIN_SIZE, 1)
+Define(E_MAX_SIZE, 10)
+Define(E_PROP_NAME, "capacity")
+// Define(E_PROP_NAME, "fee_rate_milli_msat")
+// Define(E_PROP_NAME, "fee_base_msat")
+// Define(E_PROP_NAME, "max_htlc_msat")
+// Define(E_PROP_NAME, "betweenness_centrality")
+
+Define(SIZE_RANGE, Sub(MAX_SIZE, MIN_SIZE))
+
+// A set of utility functions
+// Create a new array of property values from an array of nodes
+Define(GetProperties, Function(nodes, propName,
+Map(nodes, Function(singleNode, Property(singleNode, propName)))
+))
+// Keep only the numeric values from an array of values
+Define(KeepNumericValues, Function(values,
+Filter(values, Function(value, IsNumber(value)))
+))
+
+// Variables MAX_VALUE and MIN_VALUE will hold the max and min
+// values of all node properties.
+// The If statement is used to handle errors when there are no values to calculate
+// min and max from.
+Define(MAX_VALUE, If(
+Greater(NodeCount(graph), 0),
+Max(KeepNumericValues(GetProperties(Nodes(graph), PROP_NAME))),
+0
+))
+Define(MIN_VALUE, If(
+Greater(NodeCount(graph), 0),
+Min(KeepNumericValues(GetProperties(Nodes(graph), PROP_NAME))),
+0
+))
+
+// Normalize function that receives one inputs: node and
+// returns normalized value into a range [MIN_SIZE, MAX_SIZE]
+Define(Normalize, Function(n,
+Add(
+MIN_SIZE,
+Mul(
+SIZE_RANGE,
+Div(
+Sub(Property(n, PROP_NAME), MIN_VALUE),
+Sub(MAX_VALUE, MIN_VALUE)
+)
+)
+)
+))
+
+
+//Normalize, but for edges
+// Size range min/max variables
+
+Define(E_SIZE_RANGE, Sub(E_MAX_SIZE, E_MIN_SIZE))
+
+// // A set of utility functions
+// // Create a new array of property values from an array of nodes
+// Define(GetProperties, Function(nodes, propName,
+//   Map(nodes, Function(singleNode, Property(singleNode, propName)))
+// ))
+// // Keep only the numeric values from an array of values
+// Define(KeepNumericValues, Function(values,
+//   Filter(values, Function(value, IsNumber(value)))
+// ))
+
+// Variables MAX_VALUE and MIN_VALUE will hold the max and min
+// values of all node properties.
+// The If statement is used to handle errors when there are no values to calculate
+// min and max from.
+Define(E_MAX_VALUE, If(
+Greater(EdgeCount(graph), 0),
+Max(KeepNumericValues(GetProperties(Edges(graph), E_PROP_NAME))),
+0
+))
+Define(E_MIN_VALUE, If(
+Greater(EdgeCount(graph), 0),
+Min(KeepNumericValues(GetProperties(Edges(graph), E_PROP_NAME))),
+0
+))
+
+// Normalize function that receives one inputs: node and
+// returns normalized value into a range [MIN_SIZE, MAX_SIZE]
+Define(E_Normalize, Function(n,
+Add(
+E_MIN_SIZE,
+Mul(
+E_SIZE_RANGE,
+Div(
+Sub(Property(n, E_PROP_NAME), E_MIN_VALUE),
+Sub(E_MAX_VALUE, E_MIN_VALUE)
+)
+)
+)
+))
+
+
+// A palette of colors used to color distinct node labels
+Define(COLOR_PALETTE, AsArray(
+#000000, #FB6E00, #FFC500, #720096,
+#5E4FA2, #3288BD, #66C2A5, #ABDDA4,
+#E6F598, #FEE08B, #D53E4F, #9E0142
+))
+Define(COLOR_PALETTE_ITER, AsIterator(COLOR_PALETTE))
+
+// If there are no palette colors to use, use random colors instead
+Define(RandomColor, Function(RGB(RandomInt(255), RandomInt(255), RandomInt(255))))
+Define(GetNextColor, Function(
+Coalesce(Next(COLOR_PALETTE_ITER), RandomColor())
+))
+
+// Cache map to keep a selected color for each node label
+Define(ColorByLabel, AsMap())
+Define(GetColorByLabel, Function(labels, Coalesce(
+Get(ColorByLabel, labels),
+Set(ColorByLabel, labels, GetNextColor())
+)))
+Define(JoinLabels, Function(labels, Join(Sort(labels), ":")))
+
+// Baseline node style that will be applied to every single node
+@NodeStyle {
+Define(COLOR, GetColorByLabel(JoinLabels(Labels(node))))
+Define(NORM, Normalize(node))
+size: NORM
+color: COLOR
+color-hover: Lighter(COLOR)
+color-selected: Darker(COLOR)
+border-width: 0.6
+border-color: #1D1D1D
+font-size: 3
+}
+
+// Overwrite node text with the node label if defined
+@NodeStyle Greater(Size(Labels(node)), 0) {
+    label: Format(":{}", Join(Labels(node), " :"))
+}
+
+// Overwrite node text with the property "name" if defined
+@NodeStyle HasProperty(node, "name") {
+    label: AsText(Property(node, "name"))
+}
+
+// Feel free to uncomment the lines below to set up a custom style for the specific node label
+// @NodeStyle HasLabel(node, "MyCustomLabel") {
+//   color: black
+// }
+
+// Feel free to uncomment the lines below to set up a custom style for the specific node property
+// @NodeStyle HasProperty(node, "my_property_name") {
+//   color: black
+//   label: AsText(Property(node, "my_property_name"))
+// }
+
+Define(LATITUDE_FIELD, "lat")
+Define(LONGITUDE_FIELD, "lng")
+
+// In the case of numeric latitude and longitude properties, set them up for a switch to a map view
+@NodeStyle And(IsNumber(Property(node, LATITUDE_FIELD)), IsNumber(Property(node, LONGITUDE_FIELD))) {
+    latitude: Property(node, LATITUDE_FIELD)
+    longitude: Property(node, LONGITUDE_FIELD)
+}
+
+// Baseline edge style that will be applied to every single edge
+@EdgeStyle {
+Define(E_NORM, E_Normalize(edge))
+color: RGBA(153,153,153,0.2)
+color-hover: #999999
+color-selected: #999999
+// width: Max(AsArray(Div(Property(edge,"capacity"),100000000),0.01))
+width: E_NORM
+width-hover: E_NORM
+width-selected: E_NORM
+font-size: 3
+}
+
+// Show edge text only if there is a small number of edges in the view
+@EdgeStyle Less(EdgeCount(graph), 30) {
+    label: Type(edge)
+}
+
+// In case of a map view, set the default tile layer
+@ViewStyle.Map {
+    tile-layer: "light"
+}
+
+// Canvas background color
+@ViewStyle {
+    background-color: #FFFFFF00
+}
+
