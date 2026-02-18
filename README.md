@@ -7,7 +7,7 @@ ln-stream pulls your Lightning Network node's channel graph into a Memgraph data
 ## Quick Start (no LND)
 
 ```
-git clone https://git.lyberry.com/v/ln-stream.git
+git clone https://github.com/davisv7/ln-stream
 cd ln-stream
 docker compose up
 ```
@@ -19,7 +19,7 @@ docker compose up
 ## Quick Start (with LND)
 
 ```
-git clone https://git.lyberry.com/v/ln-stream.git
+git clone https://github.com/davisv7/ln-stream
 cd ln-stream
 ```
 
